@@ -1233,6 +1233,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "dvc", extra = ["s3"] },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -1242,7 +1243,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dvc", extras = ["s3"], specifier = ">=3.67.1" }]
+requires-dist = [
+    { name = "dvc", extras = ["s3"], specifier = ">=3.67.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
 
 [package.metadata.requires-dev]
 dev = [
