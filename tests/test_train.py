@@ -10,9 +10,11 @@ from training.train import (
     MODEL_TYPES,
     DatasetProvenance,
     DataValidationError,
+    TrainingResult,
     check_quality_gate,
     compute_file_md5,
     load_dataset,
+    select_best_passing_result,
     train_and_log_model,
     validate_dataset,
 )
@@ -123,3 +125,27 @@ def test_training_logs_metrics_and_provenance_to_mlflow(
     assert set(result.metrics) == {"f1", "precision", "recall", "roc_auc", "accuracy"}
     assert logged_run.data.metrics["f1"] == pytest.approx(result.metrics["f1"])
     assert result.model_uri.startswith("models:/")
+    assert logged_run.data.tags["quality_gate.passed"] in {"true", "false"}
+
+
+def build_result(run_id: str, f1_score: float, passed: bool) -> TrainingResult:
+    return TrainingResult(
+        run_id=run_id,
+        model_type="logistic_regression",
+        metrics={"f1": f1_score},
+        model_uri=f"models:/{run_id}",
+        quality_gate_passed=passed,
+    )
+
+
+def test_best_passing_result_ignores_higher_scoring_failed_run() -> None:
+    results = [
+        build_result("failed-but-high", 0.95, passed=False),
+        build_result("passed-lower", 0.70, passed=True),
+        build_result("passed-lowest", 0.65, passed=True),
+    ]
+    assert select_best_passing_result(results).run_id == "passed-lower"
+
+
+def test_no_passing_result_returns_none() -> None:
+    assert select_best_passing_result([build_result("only", 0.4, passed=False)]) is None

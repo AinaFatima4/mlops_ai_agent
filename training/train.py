@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -103,6 +103,9 @@ class TrainingResult:
     metrics: dict[str, float]
     model_uri: str
     quality_gate_passed: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 def compute_file_md5(file_path: Path) -> str:
@@ -257,12 +260,12 @@ def check_quality_gate(metrics: dict[str, float]) -> tuple[bool, list[str]]:
     return not failures, failures
 
 
-def train_and_log_model(
+def fit_and_log_model(
     model_type: str,
     dataset: pd.DataFrame,
     provenance: DatasetProvenance,
-) -> TrainingResult:
-    train_features, test_features, train_target, test_target = split_dataset(dataset)
+) -> tuple[str, str]:
+    train_features, test_features, train_target, _ = split_dataset(dataset)
     pipeline, hyperparameters = build_model_pipeline(model_type)
     run_name = f"{model_type}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
 
@@ -288,17 +291,6 @@ def train_and_log_model(
         pipeline.fit(train_features, train_target)
         mlflow.log_metric("training_seconds", time.perf_counter() - training_start)
 
-        metrics = evaluate_model(pipeline, test_features, test_target)
-        mlflow.log_metrics(metrics)
-
-        quality_gate_passed, quality_gate_failures = check_quality_gate(metrics)
-        mlflow.set_tags(
-            {
-                "quality_gate.passed": str(quality_gate_passed).lower(),
-                "quality_gate.failures": "; ".join(quality_gate_failures) or "none",
-            }
-        )
-
         signature = infer_signature(test_features, pipeline.predict(test_features))
         model_info = mlflow.sklearn.log_model(
             pipeline,
@@ -309,28 +301,54 @@ def train_and_log_model(
         )
         mlflow.set_tag("model.uri", model_info.model_uri)
 
+    return run.info.run_id, model_info.model_uri
+
+
+def evaluate_logged_run(run_id: str, dataset: pd.DataFrame) -> TrainingResult:
+    client = MlflowClient()
+    run = client.get_run(run_id)
+    model_uri = run.data.tags["model.uri"]
+    pipeline = mlflow.sklearn.load_model(model_uri)
+
+    _, test_features, _, test_target = split_dataset(dataset)
+    metrics = evaluate_model(pipeline, test_features, test_target)
+    quality_gate_passed, quality_gate_failures = check_quality_gate(metrics)
+
+    for metric_name, metric_value in metrics.items():
+        client.log_metric(run_id, metric_name, metric_value)
+    client.set_tag(run_id, "quality_gate.passed", str(quality_gate_passed).lower())
+    client.set_tag(run_id, "quality_gate.failures", "; ".join(quality_gate_failures) or "none")
+
     return TrainingResult(
-        run_id=run.info.run_id,
-        model_type=model_type,
+        run_id=run_id,
+        model_type=run.data.tags["model.type"],
         metrics=metrics,
-        model_uri=model_info.model_uri,
+        model_uri=model_uri,
         quality_gate_passed=quality_gate_passed,
     )
 
 
-def register_best_model(
-    results: list[TrainingResult], provenance: DatasetProvenance
-) -> dict[str, str] | None:
+def train_and_log_model(
+    model_type: str,
+    dataset: pd.DataFrame,
+    provenance: DatasetProvenance,
+) -> TrainingResult:
+    run_id, _ = fit_and_log_model(model_type, dataset, provenance)
+    return evaluate_logged_run(run_id, dataset)
+
+
+def select_best_passing_result(results: list[TrainingResult]) -> TrainingResult | None:
     passing_results = [result for result in results if result.quality_gate_passed]
     if not passing_results:
-        logger.warning("No model passed the quality gate; nothing registered")
         return None
+    return max(passing_results, key=lambda result: result.metrics["f1"])
 
-    best_result = max(passing_results, key=lambda result: result.metrics["f1"])
+
+def register_model_version(result: TrainingResult, dataset_version: str) -> dict[str, str]:
     model_version = mlflow.register_model(
-        best_result.model_uri,
+        result.model_uri,
         REGISTERED_MODEL_NAME,
-        tags={"dataset.version": provenance.version, "source.run_id": best_result.run_id},
+        tags={"dataset.version": dataset_version, "source.run_id": result.run_id},
     )
     MlflowClient().set_registered_model_alias(
         REGISTERED_MODEL_NAME, CANDIDATE_ALIAS, model_version.version
@@ -339,8 +357,18 @@ def register_best_model(
         "model_name": REGISTERED_MODEL_NAME,
         "version": str(model_version.version),
         "alias": CANDIDATE_ALIAS,
-        "run_id": best_result.run_id,
+        "run_id": result.run_id,
     }
+
+
+def register_best_model(
+    results: list[TrainingResult], provenance: DatasetProvenance
+) -> dict[str, str] | None:
+    best_result = select_best_passing_result(results)
+    if best_result is None:
+        logger.warning("No model passed the quality gate; nothing registered")
+        return None
+    return register_model_version(best_result, provenance.version)
 
 
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
