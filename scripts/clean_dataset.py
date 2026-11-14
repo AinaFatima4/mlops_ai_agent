@@ -38,9 +38,7 @@ def main() -> int:
     cleaned_rows = clean_rows(raw_rows)
     write_rows(DATASET_PATH, header, cleaned_rows)
     removed_row_count = len(raw_rows) - len(cleaned_rows)
-    print(
-        f"Kept {len(cleaned_rows)} rows, removed {removed_row_count} rows with missing values"
-    )
+    print(f"Kept {len(cleaned_rows)} rows, removed {removed_row_count} rows with missing values")
     return 0
 
 
