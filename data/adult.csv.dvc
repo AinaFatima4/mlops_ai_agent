@@ -1,0 +1,5 @@
+outs:
+- md5: 910d8ebecaaa49bd45cc3f208dc755bb
+  size: 4007022
+  hash: md5
+  path: adult.csv
