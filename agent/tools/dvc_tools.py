@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from agent.tools.command_runner import CommandFailedError, CommandRunner
+from agent.tools.errors import InvalidToolInputError
 
 DATASET_TAG_PATTERN = "dataset-v*"
 VERSION_NAME_REGEX = re.compile(r"^dataset-v\d+\.\d+$")
@@ -23,10 +24,6 @@ DVC_ALLOWED_COMMAND_PREFIXES = frozenset(
         ("dvc", "diff"),
     }
 )
-
-
-class InvalidToolInputError(ValueError):
-    """Raised when a tool receives an input that fails validation."""
 
 
 def validate_dataset_path(dataset_path: str) -> str:
