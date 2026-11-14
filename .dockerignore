@@ -1,0 +1,6 @@
+# Only send what the images need; keeps .env, .git, .venv and data out of every build
+*
+!api/
+!build/model/
+!docker/
+**/__pycache__

@@ -3,3 +3,7 @@ target-version = "py312"
 
 [lint]
 select = ["E", "F", "I", "B", "UP", "N"]
+
+[lint.isort]
+# The project has a kubernetes/ manifests folder; the import refers to the installed client
+known-third-party = ["kubernetes"]

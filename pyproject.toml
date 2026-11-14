@@ -4,11 +4,15 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "dvc[s3]>=3.67.1",
+    "fastapi>=0.163.0",
     "httpx>=0.28.1",
+    "kubernetes>=37.0.1",
     "mlflow==3.18.0",
     "pandas>=3.1.1",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.9.1",
+    "skops>=0.16.0",
+    "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]

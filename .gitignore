@@ -219,3 +219,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 airflow/simple_auth_manager_passwords.json
+build/
+.kube/

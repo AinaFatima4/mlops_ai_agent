@@ -2,7 +2,6 @@ import hashlib
 from pathlib import Path
 
 import mlflow
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,35 +17,6 @@ from training.train import (
     train_and_log_model,
     validate_dataset,
 )
-
-SYNTHETIC_ROW_COUNT = 400
-
-
-@pytest.fixture
-def synthetic_dataset() -> pd.DataFrame:
-    random_generator = np.random.default_rng(seed=7)
-    row_count = SYNTHETIC_ROW_COUNT
-    dataset = pd.DataFrame(
-        {
-            "age": random_generator.integers(18, 80, row_count).astype(float),
-            "workclass": random_generator.choice(["Private", "State-gov"], row_count),
-            "fnlwgt": random_generator.integers(10000, 400000, row_count).astype(float),
-            "education": random_generator.choice(["Bachelors", "HS-grad"], row_count),
-            "education_num": random_generator.integers(1, 16, row_count).astype(float),
-            "marital_status": random_generator.choice(["Married", "Never-married"], row_count),
-            "occupation": random_generator.choice(["Sales", "Tech-support"], row_count),
-            "relationship": random_generator.choice(["Husband", "Own-child"], row_count),
-            "race": random_generator.choice(["White", "Other"], row_count),
-            "sex": random_generator.choice(["Male", "Female"], row_count),
-            "capital_gain": random_generator.integers(0, 5000, row_count).astype(float),
-            "capital_loss": random_generator.integers(0, 500, row_count).astype(float),
-            "hours_per_week": random_generator.integers(10, 70, row_count).astype(float),
-            "native_country": random_generator.choice(["United-States", "India"], row_count),
-        }
-    )
-    signal = dataset["education_num"] + random_generator.normal(0, 2, row_count)
-    dataset["income"] = np.where(signal > np.quantile(signal, 0.75), ">50K", "<=50K")
-    return dataset
 
 
 @pytest.fixture
