@@ -223,6 +223,7 @@ def test_declined_action_is_never_executed(services: dict) -> None:
     agent.resolve_pending_action(approved=False)
     assert services["kubernetes_apps_api"].patches == []
     assert "declined" in chat_model.received_messages[-1][-1]["content"]
+    assert len(chat_model.received_messages) == 2
 
 
 def test_retraining_is_not_started_without_confirmation(services: dict) -> None:
@@ -238,8 +239,10 @@ def test_new_question_after_pending_action_counts_as_declined(services: dict) ->
     )
     agent.ask("Retrain")
     agent.ask("Actually, just list the experiments")
-    abandoned_message = chat_model.received_messages[-1][-2]
-    assert abandoned_message["role"] == "tool" and "declined" in abandoned_message["content"]
+    final_request = chat_model.received_messages[-1]
+    assert any(
+        message["role"] == "tool" and "declined" in message["content"] for message in final_request
+    )
     assert services["airflow_api_client"].posted_paths == []
 
 
@@ -415,3 +418,53 @@ def test_cut_off_answer_is_flagged(services: dict) -> None:
     )
     response = agent.ask("Long question")
     assert "Answer cut off" in response.answer
+
+
+def test_missing_services_trigger_one_coverage_nudge(services: dict) -> None:
+    agent, chat_model = build_agent(
+        [
+            call_tool("mlflow_find_best_run", {}),
+            LlmResponse(content="Answer using only MLflow."),
+            call_tool("dvc_find_version_by_hash", {"md5_hash": DATASET_MD5}, call_id="c2"),
+            call_tool("kubernetes_get_deployed_version", {}, call_id="c3"),
+            call_tool("airflow_list_dag_runs", {}, call_id="c4"),
+            LlmResponse(content="Complete answer."),
+        ],
+        services,
+    )
+    response = agent.ask("Is retraining necessary?")
+    nudge_messages = [
+        message["content"]
+        for message in chat_model.received_messages[-1]
+        if message["role"] == "user" and "query these systems" in message["content"]
+    ]
+    assert len(nudge_messages) == 1
+    assert "airflow, dvc, kubernetes" in nudge_messages[0]
+    assert response.answer == "Complete answer."
+    assert {result.tool_name.split("_")[0] for result in response.tool_results} == {
+        "mlflow",
+        "dvc",
+        "kubernetes",
+        "airflow",
+    }
+
+
+def test_coverage_nudge_is_sent_only_once(services: dict) -> None:
+    agent, _ = build_agent(
+        [LlmResponse(content="First try."), LlmResponse(content="Still no tools.")],
+        services,
+    )
+    response = agent.ask("Which dataset version is in the workspace?")
+    assert response.answer == "Still no tools."
+
+
+def test_question_with_full_coverage_is_not_nudged(services: dict) -> None:
+    agent, chat_model = build_agent(
+        [call_tool("kubernetes_find_unhealthy_pods", {}), LlmResponse(content="Healthy.")],
+        services,
+    )
+    agent.ask("Are the pods healthy?")
+    assert not any(
+        "query these systems" in str(message.get("content"))
+        for message in chat_model.received_messages[-1]
+    )

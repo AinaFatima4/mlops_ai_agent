@@ -16,6 +16,14 @@ MAXIMUM_STEPS = 12
 MAXIMUM_TOOL_RESULT_CHARACTERS = 6000
 # Roughly 4 characters per token; keeps history well inside a 16K-token context window
 DEFAULT_HISTORY_CHARACTER_BUDGET = 24000
+# Which systems a question needs evidence from, recognised by phrases in the question
+SERVICE_TRIGGER_PHRASES = {
+    "dvc": ("dataset", "data version", "dvc"),
+    "mlflow": ("best model", "best recent model", "experiment", "training runs", "f1", "metric"),
+    "kubernetes": ("deploy", "pod", "kubernetes", "endpoint", "prediction api"),
+    "airflow": ("pipeline", "dag", "airflow"),
+}
+ALL_SERVICES_TRIGGER_PHRASES = ("retrain",)
 TRUNCATED_ANSWER_NOTICE = (
     "\n\n[Answer cut off: the model reached its output or context limit. "
     "Type 'reset' and ask again.]"
@@ -51,6 +59,8 @@ Rules:
    (mlflow_find_best_run, then dvc_find_version_by_hash on its dataset.md5), the newest
    dataset version (dvc_get_current_dataset_version), the deployed model
    (kubernetes_get_deployed_version) and recent training runs (airflow_list_dag_runs).
+
+"Best" means highest F1 unless the user names another metric.
 
 Defaults: dataset data/adult.csv, experiment adult-income, registered model
 adult-income-classifier, DAG adult_income_training, namespace mlops-app,
@@ -90,6 +100,26 @@ def serialize_tool_result(result: ToolResult) -> str:
     if len(serialized) > MAXIMUM_TOOL_RESULT_CHARACTERS:
         serialized = serialized[:MAXIMUM_TOOL_RESULT_CHARACTERS] + '..."(truncated)"'
     return serialized
+
+
+def required_services(user_message: str) -> set[str]:
+    lowered_message = user_message.lower()
+    if any(phrase in lowered_message for phrase in ALL_SERVICES_TRIGGER_PHRASES):
+        return set(SERVICE_TRIGGER_PHRASES)
+    return {
+        service
+        for service, phrases in SERVICE_TRIGGER_PHRASES.items()
+        if any(phrase in lowered_message for phrase in phrases)
+    }
+
+
+def build_coverage_nudge(missing_services: set[str]) -> str:
+    tool_prefixes = ", ".join(f"{service}_*" for service in sorted(missing_services))
+    return (
+        "Before answering, query these systems for this question, because earlier results in "
+        f"the conversation may be outdated: {', '.join(sorted(missing_services))} "
+        f"(tools {tool_prefixes}). Then write the final answer."
+    )
 
 
 def message_size(message: dict[str, Any]) -> int:
@@ -148,6 +178,8 @@ class Agent:
         self.tool_schemas = tool_executor.registry.function_schemas()
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.pending_action: PendingAction | None = None
+        self.current_required_services: set[str] = set()
+        self.current_attempted_services: set[str] = set()
         self.current_request_id = ""
         self.current_results: list[ToolResult] = []
 
@@ -163,6 +195,8 @@ class Agent:
             self.pending_action = None
         self.current_request_id = uuid.uuid4().hex[:12]
         self.current_results = []
+        self.current_required_services = required_services(user_message)
+        self.current_attempted_services: set[str] = set()
         self.messages.append({"role": "user", "content": user_message})
         self.messages = trim_history(self.messages, self.history_character_budget)
         return self._run_loop()
@@ -185,6 +219,10 @@ class Agent:
         self._append_tool_message(tool_call.call_id, tool_message)
         return self._run_loop()
 
+    def _missing_services(self) -> set[str]:
+        # Attempts count too, so a declined or refused action is never asked for again
+        return self.current_required_services - self.current_attempted_services
+
     def _append_tool_message(self, call_id: str, content: str) -> None:
         self.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
@@ -194,6 +232,7 @@ class Agent:
 
     def _run_loop(self) -> AgentResponse:
         nudged_for_empty_answer = False
+        nudged_for_coverage = False
         for step_number in range(1, MAXIMUM_STEPS + 1):
             self.on_progress(f"step {step_number}: waiting for the language model...")
             step_start = time.perf_counter()
@@ -208,6 +247,15 @@ class Agent:
             self.messages.append(llm_response.as_assistant_message())
 
             if not llm_response.tool_calls:
+                missing_services = self._missing_services()
+                if missing_services and not nudged_for_coverage:
+                    # Enforced in code: the answer must rest on evidence gathered for this question
+                    nudged_for_coverage = True
+                    self.on_progress(f"asking the model to also check: {sorted(missing_services)}")
+                    self.messages.append(
+                        {"role": "user", "content": build_coverage_nudge(missing_services)}
+                    )
+                    continue
                 if llm_response.content:
                     answer = llm_response.content
                     if llm_response.finish_reason == "length":
@@ -224,6 +272,8 @@ class Agent:
                 result = self.tool_executor.execute(
                     tool_call.name, tool_call.arguments_json, self.current_request_id
                 )
+                if result.status != ToolStatus.INVALID_INPUT:
+                    self.current_attempted_services.add(result.tool_name.split("_", 1)[0])
                 if result.status == ToolStatus.CONFIRMATION_REQUIRED:
                     self.pending_action = PendingAction(tool_call, result.error or tool_call.name)
                     for skipped_call in llm_response.tool_calls[position + 1 :]:
