@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,7 @@ def test_current_version_matches_tag_by_hash(
 ) -> None:
     dvc_tools = build_dvc_tools(repository_with_dataset, version_history_responses)
     result = dvc_tools.get_current_dataset_version("data/adult.csv")
-    assert result["version"] == "dataset-v2.0"
+    assert result["committed_version"] == "dataset-v2.0"
     assert result["is_tagged_version"] is True
     assert result["last_pointer_commit"] == "2222222"
 
@@ -53,7 +54,7 @@ def test_current_version_is_none_when_workspace_hash_is_untagged(
     pointer_path.write_text(pointer_path.read_text().replace(V2_MD5, "b" * 32))
     dvc_tools = build_dvc_tools(repository_with_dataset, version_history_responses)
     result = dvc_tools.get_current_dataset_version("data/adult.csv")
-    assert result["version"] is None
+    assert result["committed_version"] is None
     assert result["is_tagged_version"] is False
 
 
@@ -150,3 +151,34 @@ def test_timeout_from_runner_propagates(repository_with_dataset: Path) -> None:
     dvc_tools = build_dvc_tools(repository_with_dataset, responses)
     with pytest.raises(CommandTimeoutError):
         dvc_tools.check_data_changed()
+
+
+def test_modified_workspace_file_is_reported_even_when_pointer_is_tagged(
+    repository_with_dataset: Path, version_history_responses: dict
+) -> None:
+    (repository_with_dataset / "data" / "adult.csv").write_text("header\nrow\n", encoding="utf-8")
+    dvc_tools = build_dvc_tools(repository_with_dataset, version_history_responses)
+    result = dvc_tools.get_current_dataset_version("data/adult.csv")
+    assert result["committed_version"] == "dataset-v2.0"
+    assert result["workspace_matches_committed_version"] is False
+    assert result["workspace_file"]["line_count"] == 2
+    assert "does not match the committed version" in result["warning"]
+
+
+def test_unmodified_workspace_file_matches_committed_version(
+    repository_with_dataset: Path, version_history_responses: dict
+) -> None:
+    data_file = repository_with_dataset / "data" / "adult.csv"
+    data_file.write_text("header\nrow\n", encoding="utf-8")
+    pointer_file = repository_with_dataset / "data" / "adult.csv.dvc"
+    actual_md5 = hashlib.md5(data_file.read_bytes()).hexdigest()
+    pointer_file.write_text(pointer_file.read_text().replace(V2_MD5, actual_md5))
+    responses = {
+        **version_history_responses,
+        ("git", "show", "dataset-v2.0:data/adult.csv.dvc"): pointer_file.read_text(),
+    }
+    dvc_tools = build_dvc_tools(repository_with_dataset, responses)
+    result = dvc_tools.get_current_dataset_version("data/adult.csv")
+    assert result["committed_version"] == "dataset-v2.0"
+    assert result["workspace_matches_committed_version"] is True
+    assert "warning" not in result

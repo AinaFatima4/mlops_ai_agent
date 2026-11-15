@@ -24,7 +24,8 @@ def main() -> int:
     assert version_names == EXPECTED_VERSIONS, f"Unexpected versions: {version_names}"
 
     current_version = dvc_tools.get_current_dataset_version(DATASET_PATH)
-    assert current_version["version"] == "dataset-v2.0", f"Current version: {current_version}"
+    assert current_version["committed_version"] == "dataset-v2.0", f"Current: {current_version}"
+    assert current_version["workspace_matches_committed_version"], current_version.get("warning")
 
     change_status = dvc_tools.check_data_changed()
     assert change_status["has_changes"] is False, f"Workspace has changes: {change_status}"
@@ -39,7 +40,7 @@ def main() -> int:
     else:
         raise AssertionError("dvc push was not blocked")
 
-    print(f"Versions: {version_names}, current: {current_version['version']}")
+    print(f"Versions: {version_names}, current: {current_version['committed_version']}")
     return 0
 
 

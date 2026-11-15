@@ -31,11 +31,11 @@ def format_evidence(response: AgentResponse) -> str:
 
 
 class TranscriptWriter:
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, name: str = "conversation") -> None:
         directory.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        self.path = directory / f"conversation-{timestamp}.md"
-        self.path.write_text(f"# Agent conversation ({timestamp} UTC)\n", encoding="utf-8")
+        self.path = directory / f"{name}-{timestamp}.md"
+        self.path.write_text(f"# Agent {name} ({timestamp} UTC)\n", encoding="utf-8")
 
     def record(self, speaker: str, text: str, response: AgentResponse | None = None) -> None:
         sections = [f"\n## {speaker}\n\n{text}\n"]

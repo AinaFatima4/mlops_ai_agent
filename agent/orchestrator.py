@@ -60,6 +60,11 @@ Rules:
    dataset version (dvc_get_current_dataset_version), the deployed model
    (kubernetes_get_deployed_version) and recent training runs (airflow_list_dag_runs).
 
+10. When a pipeline fails on data, first check whether the dataset file in the workspace
+    still matches its committed DVC version (dvc_get_current_dataset_version shows
+    workspace_matches_committed_version; dvc_check_data_changed shows modified files).
+    A modified workspace file is a different root cause from a bad tagged version.
+
 "Best" means highest F1 unless the user names another metric.
 
 Defaults: dataset data/adult.csv, experiment adult-income, registered model

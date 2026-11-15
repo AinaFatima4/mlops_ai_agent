@@ -1,5 +1,6 @@
 """DVC data management tools: dataset discovery, versions, comparison and change detection."""
 
+import hashlib
 import json
 import re
 from pathlib import Path, PurePosixPath
@@ -44,6 +45,23 @@ def validate_version_name(version_name: str) -> str:
             f"Invalid version name: {version_name!r}. Expected format like 'dataset-v1.0'"
         )
     return version_name
+
+
+def inspect_workspace_file(file_path: Path) -> dict[str, Any]:
+    if not file_path.exists():
+        return {"exists": False}
+    md5_digest = hashlib.md5()
+    line_count = 0
+    with file_path.open("rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            md5_digest.update(chunk)
+            line_count += chunk.count(b"\n")
+    return {
+        "exists": True,
+        "md5": md5_digest.hexdigest(),
+        "size_bytes": file_path.stat().st_size,
+        "line_count": line_count,
+    }
 
 
 def parse_pointer_file(pointer_text: str) -> dict[str, Any]:
@@ -116,14 +134,28 @@ class DvcTools:
             ["git", "log", "-1", "--format=%H", "--", pointer_file]
         ).standard_output.strip()
         matching_version = self._find_version_by_md5(dataset_path, current_pointer["md5"])
-        return {
+        committed_version = matching_version["version"] if matching_version else None
+        # The pointer only records what was committed; the file on disk may have changed since
+        workspace_file = inspect_workspace_file(self.repository_path / dataset_path)
+        workspace_matches = workspace_file.get("md5") == current_pointer["md5"]
+        result = {
             "dataset_path": dataset_path,
-            "version": matching_version["version"] if matching_version else None,
-            "md5": current_pointer["md5"],
-            "size_bytes": current_pointer["size_bytes"],
+            "committed_version": committed_version,
+            "committed_md5": current_pointer["md5"],
+            "committed_size_bytes": current_pointer["size_bytes"],
             "last_pointer_commit": last_commit,
             "is_tagged_version": matching_version is not None,
+            "workspace_file": workspace_file,
+            "workspace_matches_committed_version": workspace_matches,
         }
+        if not workspace_matches:
+            result["warning"] = (
+                f"The file at {dataset_path} does not match the committed version "
+                f"({committed_version or current_pointer['md5']}). It was modified, replaced or "
+                "deleted after the last DVC commit. Restore it with "
+                f"'dvc checkout {dataset_path}.dvc' or record a new version with 'dvc add'."
+            )
+        return result
 
     def find_version_by_hash(self, dataset_path: str, md5_hash: str) -> dict[str, Any]:
         dataset_path = validate_dataset_path(dataset_path)
