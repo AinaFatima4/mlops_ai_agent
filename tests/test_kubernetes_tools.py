@@ -326,3 +326,18 @@ def test_malformed_resource_names_are_rejected(pod_name: str) -> None:
     with pytest.raises(InvalidToolInputError):
         tools.get_pod_details(pod_name, NAMESPACE)
     assert core_api.calls == []
+
+
+def test_rollout_is_complete_when_runtime_adds_registry_prefix() -> None:
+    pods = [build_pod("api-1"), build_pod("api-2")]
+    for pod in pods:
+        pod.status.container_statuses[0].image = f"docker.io/library/{IMAGE}"
+    tools, _, _ = build_tools(pods)
+    assert tools.get_deployed_version(DEPLOYMENT_NAME, NAMESPACE)["rollout_complete"] is True
+
+
+def test_rollout_is_incomplete_while_old_image_still_runs() -> None:
+    old_pod = build_pod("api-old")
+    old_pod.status.container_statuses[0].image = "adult-income-api:model-v1"
+    tools, _, _ = build_tools([old_pod, build_pod("api-new")])
+    assert tools.get_deployed_version(DEPLOYMENT_NAME, NAMESPACE)["rollout_complete"] is False

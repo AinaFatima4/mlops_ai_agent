@@ -50,6 +50,14 @@ def format_timestamp(timestamp: datetime | None) -> str | None:
     return timestamp.isoformat() if timestamp else None
 
 
+def normalize_image(image: str) -> str:
+    # The container runtime reports "docker.io/library/name:tag" for an image declared as "name:tag"
+    for registry_prefix in ("docker.io/library/", "docker.io/"):
+        if image.startswith(registry_prefix):
+            return image[len(registry_prefix) :]
+    return image
+
+
 def image_tag(image: str) -> str:
     return image.rsplit(":", 1)[1] if ":" in image.rsplit("/", 1)[-1] else "latest"
 
@@ -290,7 +298,9 @@ class KubernetesTools:
             "desired_images": desired_images,
             "desired_image_tags": [image_tag(image) for image in desired_images],
             "running_ready_images": running_images,
-            "rollout_complete": running_images == sorted(set(desired_images)),
+            "rollout_complete": self._is_rollout_complete(
+                deployment, desired_images, running_images
+            ),
             "service_reported_version": self._read_version_endpoint(deployment_name, namespace),
         }
 
@@ -319,6 +329,20 @@ class KubernetesTools:
             "restarted_at": restart_time,
             "note": "A rolling restart was started; pods are replaced one at a time.",
         }
+
+    @staticmethod
+    def _is_rollout_complete(
+        deployment: Any, desired_images: list[str], running_images: list[str]
+    ) -> bool:
+        status = deployment.status
+        desired_replicas = deployment.spec.replicas or 0
+        replicas_settled = (status.updated_replicas or 0) == desired_replicas and (
+            status.available_replicas or 0
+        ) == desired_replicas
+        images_match = {normalize_image(image) for image in running_images} == {
+            normalize_image(image) for image in desired_images
+        }
+        return replicas_settled and images_match
 
     def _check_namespace(self, namespace: str) -> str:
         if namespace != self.allowed_namespace:

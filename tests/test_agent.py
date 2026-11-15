@@ -387,3 +387,31 @@ def test_repeated_empty_answer_falls_back_to_tool_summary(services: dict) -> Non
     response = agent.ask("Is the API healthy?")
     assert "did not write an answer" in response.answer
     assert "kubernetes_find_unhealthy_pods: success" in response.answer
+
+
+def test_old_turns_are_dropped_when_history_exceeds_budget(
+    services: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_HISTORY_CHARACTERS", "1500")
+    long_answer = "x" * 1000
+    agent, chat_model = build_agent(
+        [LlmResponse(content=long_answer), LlmResponse(content=long_answer), LlmResponse("ok")],
+        services,
+    )
+    agent.ask("first question")
+    agent.ask("second question")
+    agent.ask("third question")
+    final_request = chat_model.received_messages[-1]
+    user_messages = [message["content"] for message in final_request if message["role"] == "user"]
+    assert "first question" not in user_messages
+    assert user_messages[-1] == "third question"
+    assert final_request[0]["role"] == "system"
+
+
+def test_cut_off_answer_is_flagged(services: dict) -> None:
+    agent, _ = build_agent(
+        [LlmResponse(content="Partial table | dataset-v2.0 (MD5: 0676", finish_reason="length")],
+        services,
+    )
+    response = agent.ask("Long question")
+    assert "Answer cut off" in response.answer

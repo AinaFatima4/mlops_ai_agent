@@ -29,6 +29,7 @@ class LlmToolCall:
 class LlmResponse:
     content: str
     tool_calls: list[LlmToolCall] = field(default_factory=list)
+    finish_reason: str = "stop"
 
     def as_assistant_message(self) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
@@ -52,7 +53,8 @@ class ChatModel(Protocol):
 
 def parse_chat_completion(body: dict[str, Any]) -> LlmResponse:
     try:
-        message = body["choices"][0]["message"]
+        choice = body["choices"][0]
+        message = choice["message"]
     except (KeyError, IndexError, TypeError) as error:
         raise LlmUnavailableError(f"Unexpected LLM response shape: {str(body)[:300]}") from error
 
@@ -70,7 +72,11 @@ def parse_chat_completion(body: dict[str, Any]) -> LlmResponse:
             )
         )
     content = THINKING_BLOCK_REGEX.sub("", message.get("content") or "").strip()
-    return LlmResponse(content=content, tool_calls=tool_calls)
+    return LlmResponse(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=choice.get("finish_reason") or "stop",
+    )
 
 
 class OpenAiCompatibleChatModel:

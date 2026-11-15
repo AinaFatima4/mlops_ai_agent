@@ -1,6 +1,7 @@
 """Agent loop: the LLM picks tools, the executor runs them, and answers rest on their results."""
 
 import json
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -13,6 +14,12 @@ from agent.tool_executor import ToolExecutor
 
 MAXIMUM_STEPS = 12
 MAXIMUM_TOOL_RESULT_CHARACTERS = 6000
+# Roughly 4 characters per token; keeps history well inside a 16K-token context window
+DEFAULT_HISTORY_CHARACTER_BUDGET = 24000
+TRUNCATED_ANSWER_NOTICE = (
+    "\n\n[Answer cut off: the model reached its output or context limit. "
+    "Type 'reset' and ask again.]"
+)
 EMPTY_ANSWER_NUDGE = (
     "You returned an empty answer. Write the final answer now in plain text, based only on "
     "the tool results above, ending with Facts, Uncertainties and Recommended actions."
@@ -40,6 +47,10 @@ Rules:
    runs) instead of writing "None". If you want to compare with the deployed model, call
    kubernetes_get_deployed_version first.
 8. After the tool calls, always write a final answer in plain text; never reply empty.
+9. To decide whether retraining is necessary, gather all of: the best run and its dataset
+   (mlflow_find_best_run, then dvc_find_version_by_hash on its dataset.md5), the newest
+   dataset version (dvc_get_current_dataset_version), the deployed model
+   (kubernetes_get_deployed_version) and recent training runs (airflow_list_dag_runs).
 
 Defaults: dataset data/adult.csv, experiment adult-income, registered model
 adult-income-classifier, DAG adult_income_training, namespace mlops-app,
@@ -81,6 +92,26 @@ def serialize_tool_result(result: ToolResult) -> str:
     return serialized
 
 
+def message_size(message: dict[str, Any]) -> int:
+    return len(json.dumps(message, default=str))
+
+
+def trim_history(messages: list[dict[str, Any]], character_budget: int) -> list[dict[str, Any]]:
+    """Drop the oldest whole question-and-answer turns until the history fits the budget."""
+    system_message, conversation = messages[0], messages[1:]
+    turn_starts = [index for index, message in enumerate(conversation) if message["role"] == "user"]
+    while (
+        len(turn_starts) > 1
+        and sum(message_size(message) for message in conversation) > character_budget
+    ):
+        # Remove everything before the second turn, so assistant/tool messages stay paired
+        conversation = conversation[turn_starts[1] :]
+        turn_starts = [
+            index for index, message in enumerate(conversation) if message["role"] == "user"
+        ]
+    return [system_message, *conversation]
+
+
 def build_fallback_answer(results: list[ToolResult]) -> str:
     lines = ["The language model did not write an answer. These are the tool results it received:"]
     lines.extend(f"- {result.tool_name}: {result.status.value}" for result in results)
@@ -111,6 +142,9 @@ class Agent:
         self.chat_model = chat_model
         self.tool_executor = tool_executor
         self.on_progress = on_progress
+        self.history_character_budget = int(
+            os.environ.get("AGENT_HISTORY_CHARACTERS", DEFAULT_HISTORY_CHARACTER_BUDGET)
+        )
         self.tool_schemas = tool_executor.registry.function_schemas()
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.pending_action: PendingAction | None = None
@@ -130,6 +164,7 @@ class Agent:
         self.current_request_id = uuid.uuid4().hex[:12]
         self.current_results = []
         self.messages.append({"role": "user", "content": user_message})
+        self.messages = trim_history(self.messages, self.history_character_budget)
         return self._run_loop()
 
     def resolve_pending_action(self, approved: bool) -> AgentResponse:
@@ -174,7 +209,10 @@ class Agent:
 
             if not llm_response.tool_calls:
                 if llm_response.content:
-                    return self._finish(llm_response.content)
+                    answer = llm_response.content
+                    if llm_response.finish_reason == "length":
+                        answer += TRUNCATED_ANSWER_NOTICE
+                    return self._finish(answer)
                 if not nudged_for_empty_answer:
                     # Some models put their whole reply in hidden reasoning; ask once more
                     nudged_for_empty_answer = True
